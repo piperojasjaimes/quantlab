@@ -67,21 +67,40 @@ class AutoOptimizationLoop:
 
     async def _run_cycle(self) -> None:
         batch_size = config.get("strategy_generation", "min_strategies_per_cycle", default=5)
+
+        task = Task(type=TaskType.STRATEGY_GENERATE, agent="strategy", params={"count": batch_size})
+        await save_task(task)
+        await update_task_status(task.id, TaskStatus.RUNNING)
+        await add_task_log(task.id, f"Generating {batch_size} strategies")
+
         strategies = [self._generate_strategy() for _ in range(batch_size)]
         log.info("Generated %d strategies", len(strategies))
         self._stats["strategies_generated"] += len(strategies)
+        await update_task_status(task.id, TaskStatus.COMPLETED)
 
         for s in strategies:
             await self._save_strategy_to_db(s)
 
         backtest_results = []
+        bt_task = Task(type=TaskType.BACKTEST_RUN, agent="backtest")
+        await save_task(bt_task)
+        await update_task_status(bt_task.id, TaskStatus.RUNNING)
+        await add_task_log(bt_task.id, f"Running {len(strategies)} backtests")
+
         for s in strategies:
             result = await self._run_backtest(s)
             if result and "metrics" in result:
                 backtest_results.append((s, result))
                 self._stats["backtests_run"] += 1
 
+        await update_task_status(bt_task.id, TaskStatus.COMPLETED)
+
         optimized = []
+        opt_task = Task(type=TaskType.OPTIMIZE, agent="optimization")
+        await save_task(opt_task)
+        await update_task_status(opt_task.id, TaskStatus.RUNNING)
+        await add_task_log(opt_task.id, f"Optimizing {len(backtest_results)} strategies")
+
         for s, bt in backtest_results:
             if bt["metrics"].get("sharpe_ratio", 0) > 0.5:
                 opt = await self._optimize_strategy(s)
@@ -89,12 +108,21 @@ class AutoOptimizationLoop:
                     optimized.append((s, opt))
                     self._stats["optimizations_run"] += 1
 
+        await update_task_status(opt_task.id, TaskStatus.COMPLETED)
+
         validated = []
+        val_task = Task(type=TaskType.VALIDATE, agent="validation")
+        await save_task(val_task)
+        await update_task_status(val_task.id, TaskStatus.RUNNING)
+        await add_task_log(val_task.id, f"Validating {len(optimized)} strategies")
+
         for s, opt in optimized:
             is_valid = await self._validate_strategy(s, opt)
             if is_valid:
                 validated.append((s, opt))
                 self._stats["validations_passed"] += 1
+
+        await update_task_status(val_task.id, TaskStatus.COMPLETED)
 
         for s, opt in validated:
             await self._save_backtest_result(s, opt)
