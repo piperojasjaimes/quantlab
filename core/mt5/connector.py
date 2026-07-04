@@ -161,7 +161,13 @@ class MT5Connector:
         ema_fast = self._ema(closes, ema_fast_p)
         ema_slow = self._ema(closes, ema_slow_p)
 
-        point = 0.0001 if "JPY" not in symbol else 0.01
+        # XAUUSD uses 0.01 point (2 decimals), forex uses 0.0001 (4 decimals)
+        if symbol == "XAUUSD":
+            point = 0.01
+        elif "JPY" in symbol:
+            point = 0.01
+        else:
+            point = 0.0001
         sl = sl_pips * point
         tp = tp_pips * point
 

@@ -73,21 +73,20 @@ class TestAutoLoop:
             assert p.stop_loss > 0
             assert p.take_profit > 0
 
-    def test_monte_carlo(self):
+    def test_validate_good(self):
         loop = AutoOptimizationLoop()
-        metrics = {"sharpe_ratio": 1.5, "equity_curve": [10000, 10500, 11000, 10800, 11200]}
-        result = loop._monte_carlo(metrics)
-        assert "probability_of_profit" in result
-        assert "avg_final_equity" in result
-        assert result["probability_of_profit"] > 0
+        bt = {"metrics": {"sharpe_ratio": 1.5, "max_drawdown_pct": 15, "profit_factor": 1.8}}
+        assert loop._validate(bt) is True
 
-    def test_walk_forward(self):
+    def test_validate_bad_sharpe(self):
         loop = AutoOptimizationLoop()
-        s = Strategy(name="test", pattern=StrategyPattern.TREND_FOLLOWING, timeframe=Timeframe.M15)
-        bt = {"metrics": {"sharpe_ratio": 1.5, "max_drawdown_pct": 10}}
-        result = loop._walk_forward(s, bt)
-        assert "avg_sharpe" in result
-        assert "passed" in result
+        bt = {"metrics": {"sharpe_ratio": 0.3, "max_drawdown_pct": 10, "profit_factor": 1.5}}
+        assert loop._validate(bt) is False
+
+    def test_validate_bad_dd(self):
+        loop = AutoOptimizationLoop()
+        bt = {"metrics": {"sharpe_ratio": 2.0, "max_drawdown_pct": 40, "profit_factor": 2.0}}
+        assert loop._validate(bt) is False
 
     def test_stop(self):
         loop = AutoOptimizationLoop()
