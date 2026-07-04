@@ -151,6 +151,8 @@ class MT5Connector:
 
     def _process_rates(self, closes: np.ndarray, highs: np.ndarray, lows: np.ndarray,
                        symbol: str, timeframe: str, params: dict) -> dict:
+        from core.calendar.economic_calendar import econ_calendar
+
         ema_fast_p = params.get("ema_fast", 12)
         ema_slow_p = params.get("ema_slow", 26)
         sl_pips = params.get("stop_loss", 50)
@@ -162,7 +164,9 @@ class MT5Connector:
         ema_slow = self._ema(closes, ema_slow_p)
 
         # XAUUSD uses 0.01 point (2 decimals), forex uses 0.0001 (4 decimals)
-        if symbol == "XAUUSD":
+        if symbol in ("XAUUSD", "BTCUSD", "ETHUSD"):
+            point = 0.01
+        elif "NAS" in symbol or "SP" in symbol:
             point = 0.01
         elif "JPY" in symbol:
             point = 0.01
@@ -178,21 +182,31 @@ class MT5Connector:
         sl_price = 0.0
         tp_price = 0.0
         best_price = 0.0
+        daily_bars = []
 
         for i in range(max(ema_slow_p, ema_fast_p) + 1, len(closes)):
             if position == 0:
-                if ema_fast[i - 1] <= ema_slow[i - 1] and ema_fast[i] > ema_slow[i]:
-                    position = 1
-                    entry_price = closes[i]
-                    sl_price = entry_price - sl
-                    tp_price = entry_price + tp
-                    best_price = entry_price
-                elif ema_fast[i - 1] >= ema_slow[i - 1] and ema_fast[i] < ema_slow[i]:
-                    position = -1
-                    entry_price = closes[i]
-                    sl_price = entry_price + sl
-                    tp_price = entry_price - tp
-                    best_price = entry_price
+                # Check economic calendar — skip entries during no-trade zones
+                try:
+                    # Convert bar index to approximate datetime
+                    bar_time = datetime(2024, 1, 1) + timedelta(minutes=i)
+                    is_blocked = econ_calendar.is_no_trade_zone_for_backtest(bar_time, symbol)
+                except Exception:
+                    is_blocked = False
+
+                if not is_blocked:
+                    if ema_fast[i - 1] <= ema_slow[i - 1] and ema_fast[i] > ema_slow[i]:
+                        position = 1
+                        entry_price = closes[i]
+                        sl_price = entry_price - sl
+                        tp_price = entry_price + tp
+                        best_price = entry_price
+                    elif ema_fast[i - 1] >= ema_slow[i - 1] and ema_fast[i] < ema_slow[i]:
+                        position = -1
+                        entry_price = closes[i]
+                        sl_price = entry_price + sl
+                        tp_price = entry_price - tp
+                        best_price = entry_price
             elif position == 1:
                 best_price = max(best_price, highs[i])
                 if trailing > 0:
@@ -226,10 +240,23 @@ class MT5Connector:
                     equity.append(equity[-1] + pnl)
                     position = 0
 
-        return self._compute_metrics(trades, equity, symbol, timeframe, params)
+            # Track daily equity for FTMO compliance
+            bars_per_day = 390 if "NAS" in symbol or "SP" in symbol else 1440 if "BTC" in symbol or "ETH" in symbol else 390
+            if i > 0 and i % bars_per_day == 0 and equity:
+                day_high = max(equity[-min(bars_per_day, len(equity)):])
+                day_low = min(equity[-min(bars_per_day, len(equity)):])
+                daily_bars.append({
+                    "date": f"day_{len(daily_bars)+1}",
+                    "open_equity": equity[-min(bars_per_day, len(equity))],
+                    "close_equity": equity[-1],
+                    "high_equity": day_high,
+                    "low_equity": day_low,
+                })
+
+        return self._compute_metrics(trades, equity, symbol, timeframe, params, daily_bars)
 
     def _compute_metrics(self, trades: list, equity: list, symbol: str,
-                         timeframe: str, params: dict) -> dict:
+                         timeframe: str, params: dict, daily_bars: list = None) -> dict:
         if not trades:
             return {"error": "No trades generated", "metrics": {}, "equity_curve": equity}
 
@@ -275,7 +302,18 @@ class MT5Connector:
             "largest_loss": round(min(losses), 2) if losses else 0,
             "equity_curve": [round(e, 2) for e in equity],
         }
-        return {"metrics": metrics, "symbol": symbol, "timeframe": timeframe, "params": params}
+
+        # FTMO compliance check
+        try:
+            from core.ftmo.compliance import ftmo_checker
+            ftmo_result = ftmo_checker.check(metrics, equity, daily_bars or [])
+            metrics["ftmo_score"] = ftmo_result["ftmo_score"]
+            metrics["ftmo_passed"] = ftmo_result["passed"]
+        except Exception:
+            pass
+
+        return {"metrics": metrics, "symbol": symbol, "timeframe": timeframe,
+                "params": params, "daily_bars": daily_bars or []}
 
     def _simulate_backtest(self, symbol: str, timeframe: str, params: dict) -> dict:
         log.info("Running simulated backtest for %s %s", symbol, timeframe)
