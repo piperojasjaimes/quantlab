@@ -1,0 +1,1 @@
+"""FTMO compliance module."""

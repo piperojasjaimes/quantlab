@@ -1,4 +1,4 @@
-"""Auto-Optimization Loop — XAUUSD Momentum Focus, 2-week rolling windows."""
+"""Auto-Optimization Loop — FTMO Challenge Focus, 5 symbols, 3 directions."""
 from __future__ import annotations
 
 import asyncio
@@ -13,6 +13,7 @@ from typing import Any
 from core.config import config
 from core.logger import get_logger
 from core.mt5.connector import mt5_connector
+from core.ftmo.compliance import ftmo_checker
 from core.models import (
     Strategy,
     StrategyParams,
@@ -27,17 +28,29 @@ from database.task_repository import save_task, update_task_status, add_task_log
 
 log = get_logger("pipeline.loop")
 
-SYMBOL = "XAUUSD"
-ANALYSIS_TF = ["H1", "M15", "M5"]
-EXEC_TF = "M1"
+SYMBOLS = config.get("symbols", default=["XAUUSD", "BTCUSD", "ETHUSD", "NAS100", "US500"])
+DIRECTIONS = config.get("strategy_generation", "directions", default=["bullish", "bearish", "directional"])
+ANALYSIS_TF = config.get("strategy_generation", "analysis_timeframes", default=["H1", "M15", "M5"])
+EXEC_TF = config.get("strategy_generation", "execution_timeframe", default="M1")
 WINDOW_DAYS = config.get("backtest", "window_days", default=14)
 MAX_HISTORY = config.get("backtest", "max_history_days", default=365)
+VALIDATION_WEEKS = config.get("backtest", "validation_weeks", default=4)
+MIN_WEEKS_PASSED = config.get("validation", "min_weeks_passed", default=3)
 
-MOMENTUM_PATTERNS = [
-    "macd_crossover", "macd_divergence", "rsi_momentum", "rsi_reversal",
-    "ema_crossover", "ema_triple", "momentum_breakout",
-    "macd_rsi_confluence", "ema_macd_combined", "multi_tf_momentum",
-]
+PATTERNS = {
+    "bullish": ["ema_bullish_cross", "rsi_oversold_bounce", "macd_bullish_cross",
+                "break_of_structure_bull", "fair_value_gap_bull"],
+    "bearish": ["ema_bearish_cross", "rsi_overbought_reject", "macd_bearish_cross",
+                "break_of_structure_bear", "fair_value_gap_bear"],
+    "directional": ["ema_crossover", "macd_crossover", "rsi_momentum",
+                     "momentum_breakout", "multi_tf_momentum"],
+}
+
+# Point values per symbol
+POINTS = {
+    "XAUUSD": 0.01, "BTCUSD": 0.01, "ETHUSD": 0.01,
+    "NAS100": 0.01, "US500": 0.01,
+}
 
 
 class AutoOptimizationLoop:
@@ -48,18 +61,21 @@ class AutoOptimizationLoop:
             "strategies_generated": 0,
             "backtests_run": 0,
             "optimizations_run": 0,
-            "validations_passed": 0,
+            "ftmo_passed": 0,
             "mutations_created": 0,
-            "best_sharpe": 0.0,
+            "best_ftmo_score": 0.0,
             "best_strategy": "",
             "windows_tested": 0,
+            "symbols_tested": {},
         }
 
     async def start(self) -> None:
         self._running = True
         log.info("=" * 60)
-        log.info("QuantLab v3 — XAUUSD Momentum Focus")
-        log.info("2-week rolling windows, real MT5 data, M1 execution")
+        log.info("QuantLab v4 — FTMO Challenge Focus")
+        log.info("Symbols: %s", ", ".join(SYMBOLS))
+        log.info("Directions: %s", ", ".join(DIRECTIONS))
+        log.info("2-week windows, real MT5 data, FTMO rules")
         log.info("=" * 60)
 
         try:
@@ -76,126 +92,147 @@ class AutoOptimizationLoop:
             try:
                 await self._run_cycle()
                 await self._save_stats()
-                log.info("Cycle %d done. Best Sharpe: %.2f | Strategy: %s",
-                         self._cycle, self._stats["best_sharpe"], self._stats["best_strategy"])
+                log.info("Cycle %d done. Best FTMO: %.1f | %s",
+                         self._cycle, self._stats["best_ftmo_score"],
+                         self._stats["best_strategy"])
             except Exception as e:
                 log.error("Cycle %d error: %s\n%s", self._cycle, e, traceback.format_exc())
             await asyncio.sleep(2)
 
     async def _run_cycle(self) -> None:
-        # ── 1. Generate momentum strategies ──────────────────────────────────
-        batch = config.get("strategy_generation", "min_strategies_per_cycle", default=8)
+        # ── 1. Generate strategies for each symbol × direction ───────────────
         strategies = []
-        for _ in range(batch):
-            s = self._generate_momentum_strategy()
-            await self._save_strategy_to_db(s)
-            strategies.append(s)
-            self._stats["strategies_generated"] += 1
-        log.info("Generated %d XAUUSD momentum strategies", len(strategies))
+        for symbol in SYMBOLS:
+            for direction in DIRECTIONS:
+                batch = config.get("strategy_generation", "min_strategies_per_cycle", default=10) // (len(SYMBOLS) * len(DIRECTIONS))
+                for _ in range(max(batch, 2)):
+                    s = self._generate_strategy(symbol, direction)
+                    await self._save_strategy_to_db(s)
+                    strategies.append(s)
+                    self._stats["strategies_generated"] += 1
+        log.info("Generated %d strategies across %d symbols × %d directions",
+                 len(strategies), len(SYMBOLS), len(DIRECTIONS))
 
-        # ── 2. Backtest each strategy across 2-week windows ──────────────────
+        # ── 2. Backtest each strategy ────────────────────────────────────────
         all_results = []
         windows = self._get_2week_windows()[:10]
-        log.info("Testing %d strategies across %d windows", len(strategies), len(windows))
 
         for s in strategies:
-            for window in windows:
+            symbol = s.symbol
+            window_results = []
+            for w in windows:
                 try:
-                    result = await self._run_backtest(s, window)
+                    result = await self._run_backtest(s, w)
                     if result and "metrics" in result:
-                        m = result["metrics"]
-                        all_results.append((s, result))
+                        window_results.append((w, result))
                         self._stats["backtests_run"] += 1
                         self._stats["windows_tested"] += 1
-                        log.info("  %s | %s→%s | Sharpe=%.2f PF=%.2f DD=%.1f%% Trades=%d",
-                                 s.name[:35],
-                                 window["start"][:10], window["end"][:10],
-                                 m.get("sharpe_ratio", 0),
-                                 m.get("profit_factor", 0),
-                                 m.get("max_drawdown_pct", 0),
-                                 m.get("total_trades", 0))
                 except Exception as e:
-                    log.error("Backtest error %s: %s", s.name[:20], e)
+                    log.error("Backtest error %s %s: %s", symbol, s.name[:20], e)
 
-        # ── 3. Optimize best strategies ──────────────────────────────────────
-        best_candidates = self._aggregate_results(all_results)
-        optimized = []
-        for s, avg_metrics in best_candidates[:3]:
+            if window_results:
+                # FTMO check on each window
+                ftmo_pass_count = 0
+                for w, r in window_results:
+                    eq = r.get("metrics", {}).get("equity_curve", [])
+                    compliance = ftmo_checker.check(r["metrics"], eq)
+                    if compliance["passed"]:
+                        ftmo_pass_count += 1
+
+                all_results.append((s, window_results, ftmo_pass_count))
+                if symbol not in self._stats["symbols_tested"]:
+                    self._stats["symbols_tested"][symbol] = 0
+                self._stats["symbols_tested"][symbol] += 1
+
+        # ── 3. Rank by FTMO compliance across windows ────────────────────────
+        ranked = self._rank_by_ftmo(all_results)
+        log.info("Ranked %d strategies. Top FTMO scores:", len(ranked))
+        for s, score, details in ranked[:5]:
+            log.info("  %s | Score=%.1f | Weeks passed: %d/%d | %s",
+                     s.name[:40], score, details.get("weeks_passed", 0),
+                     details.get("weeks_total", 0), s.symbol)
+
+        # ── 4. Optimize and validate best strategies ─────────────────────────
+        for s, score, details in ranked[:5]:
+            if score < 50:
+                continue
             try:
                 opt = await self._optimize_strategy(s)
                 if opt:
-                    optimized.append((s, opt))
+                    opt_compliance = ftmo_checker.check(
+                        opt.get("metrics", {}),
+                        opt.get("metrics", {}).get("equity_curve", []))
+                    if opt_compliance["passed"]:
+                        self._stats["ftmo_passed"] += 1
+                        await self._save_backtest_result(s, opt, "passed",
+                                                         opt_compliance["ftmo_score"])
+                        log.info("FTMO PASSED: %s | Score=%.1f | Profit=$%.0f",
+                                 s.name[:30], opt_compliance["ftmo_score"],
+                                 opt["metrics"].get("net_profit", 0))
+                    else:
+                        await self._save_backtest_result(s, opt, "failed")
                     self._stats["optimizations_run"] += 1
-                    log.info("Optimized %s: Sharpe=%.2f", s.name[:30],
-                             opt.get("metrics", {}).get("sharpe_ratio", 0))
             except Exception as e:
                 log.error("Optimization error: %s", e)
 
-        # ── 4. Validate and save ─────────────────────────────────────────────
-        validated = []
-        for s, opt in optimized:
-            if self._validate(opt):
-                validated.append((s, opt))
-                self._stats["validations_passed"] += 1
-                await self._save_backtest_result(s, opt, "passed")
-                log.info("VALIDATED: %s | Sharpe=%.2f", s.name[:30],
-                         opt.get("metrics", {}).get("sharpe_ratio", 0))
-            else:
-                await self._save_backtest_result(s, opt, "failed")
-
         # ── 5. Mutate best ───────────────────────────────────────────────────
-        if validated:
-            best = max(validated, key=lambda x: x[1].get("metrics", {}).get("sharpe_ratio", 0))
-            best_sharpe = best[1].get("metrics", {}).get("sharpe_ratio", 0)
-            if best_sharpe > self._stats["best_sharpe"]:
-                self._stats["best_sharpe"] = best_sharpe
-                self._stats["best_strategy"] = best[0].name
-
+        if ranked and ranked[0][1] > 50:
+            best = ranked[0][0]
             for _ in range(3):
                 try:
-                    m = await self._mutate_strategy(best[0])
+                    m = await self._mutate_strategy(best)
                     if m:
                         self._stats["mutations_created"] += 1
                 except Exception as e:
                     log.error("Mutation error: %s", e)
 
-    def _generate_momentum_strategy(self) -> Strategy:
-        pattern = random.choice(MOMENTUM_PATTERNS)
-        params = self._random_momentum_params(pattern)
-        name = f"{pattern}_{SYMBOL}_{EXEC_TF}_{uuid.uuid4().hex[:6]}"
+    def _generate_strategy(self, symbol: str, direction: str) -> Strategy:
+        pattern = random.choice(PATTERNS[direction])
+        params = self._random_params(pattern, direction, symbol)
+        name = f"{pattern}_{symbol}_{EXEC_TF}_{uuid.uuid4().hex[:6]}"
         return Strategy(
             name=name,
             pattern=StrategyPattern.TREND_FOLLOWING,
             timeframe=Timeframe(EXEC_TF),
-            symbol=SYMBOL,
+            symbol=symbol,
             params=params,
         )
 
-    def _random_momentum_params(self, pattern: str) -> StrategyParams:
+    def _random_params(self, pattern: str, direction: str, symbol: str) -> StrategyParams:
         p = StrategyParams()
-        if "macd" in pattern:
+        # EMA settings
+        if "ema" in pattern:
+            p.ema_fast = random.choice([5, 8, 10, 13, 21])
+            p.ema_slow = random.choice([21, 34, 50, 55, 89])
+        elif "macd" in pattern:
             p.ema_fast = random.choice([8, 10, 12])
             p.ema_slow = random.choice([21, 26, 30])
-        elif "ema" in pattern:
-            p.ema_fast = random.choice([5, 8, 10, 13])
-            p.ema_slow = random.choice([21, 34, 50, 55])
-        elif "rsi" in pattern:
-            p.rsi_period = random.choice([7, 9, 14, 21])
-            p.rsi_overbought = random.choice([70, 75, 80])
-            p.rsi_oversold = random.choice([20, 25, 30])
         else:
             p.ema_fast = random.randint(5, 20)
             p.ema_slow = random.randint(20, 55)
 
-        p.stop_loss = random.choice([15, 20, 30, 40, 50, 80, 100])
-        p.take_profit = random.choice([30, 50, 80, 100, 150, 200, 300])
+        # RSI settings
+        p.rsi_period = random.choice([7, 9, 14, 21])
+        p.rsi_overbought = random.choice([70, 75, 80])
+        p.rsi_oversold = random.choice([20, 25, 30])
+
+        # SL/TP — risk 1% per trade ($1000 on $100k account)
         p.atr_period = random.choice([10, 14, 20])
         p.atr_multiplier = round(random.uniform(1.0, 2.5), 1)
-        p.trailing_stop = random.choice([15, 20, 30, 50, 80])
+
+        if direction == "bullish":
+            p.stop_loss = random.choice([20, 30, 50, 80])
+            p.take_profit = random.choice([40, 60, 100, 150, 200])
+        elif direction == "bearish":
+            p.stop_loss = random.choice([20, 30, 50, 80])
+            p.take_profit = random.choice([40, 60, 100, 150, 200])
+        else:
+            p.stop_loss = random.choice([15, 20, 30, 50])
+            p.take_profit = random.choice([30, 50, 80, 120, 200])
+
+        p.trailing_stop = random.choice([10, 15, 20, 30, 50])
+        # Lot size: risk $1000 per trade with SL
         p.lot_size = round(random.choice([0.01, 0.02, 0.05, 0.1]), 2)
-        p.rsi_period = p.rsi_period if p.rsi_period > 0 else 14
-        p.rsi_overbought = p.rsi_overbought if p.rsi_overbought > 0 else 70
-        p.rsi_oversold = p.rsi_oversold if p.rsi_oversold > 0 else 30
         return p
 
     def _get_2week_windows(self) -> list[dict]:
@@ -213,58 +250,56 @@ class AutoOptimizationLoop:
 
     async def _run_backtest(self, strategy: Strategy, window: dict) -> dict | None:
         rates = mt5_connector.get_rates_range(
-            SYMBOL, EXEC_TF, window["start"], window["end"])
+            strategy.symbol, EXEC_TF, window["start"], window["end"])
         if rates is None or len(rates) < 100:
             return None
         import numpy as np
         closes = np.array([r[4] for r in rates])
         highs = np.array([r[2] for r in rates])
         lows = np.array([r[3] for r in rates])
-        return mt5_connector._process_rates(closes, highs, lows, SYMBOL, EXEC_TF,
+        return mt5_connector._process_rates(closes, highs, lows,
+                                            strategy.symbol, EXEC_TF,
                                             strategy.params.model_dump())
 
-    def _aggregate_results(self, all_results: list[tuple]) -> list[tuple]:
-        from collections import defaultdict
-        by_strategy = defaultdict(list)
-        for s, r in all_results:
-            by_strategy[s.id].append((s, r))
+    def _rank_by_ftmo(self, all_results: list) -> list:
         ranked = []
-        for sid, results in by_strategy.items():
-            sharpes = [r.get("metrics", {}).get("sharpe_ratio", 0) for _, r in results]
-            avg_sharpe = sum(sharpes) / max(len(sharpes), 1)
-            avg_dd = sum(r.get("metrics", {}).get("max_drawdown_pct", 0) for _, r in results) / max(len(results), 1)
-            avg_pf = sum(r.get("metrics", {}).get("profit_factor", 0) for _, r in results) / max(len(results), 1)
-            best_result = max(results, key=lambda x: x[1].get("metrics", {}).get("sharpe_ratio", 0))
-            avg_metrics = {
-                "sharpe_ratio": round(avg_sharpe, 2),
-                "max_drawdown_pct": round(avg_dd, 2),
-                "profit_factor": round(avg_pf, 2),
-                "windows_tested": len(results),
-                **best_result[1].get("metrics", {}),
-            }
-            ranked.append((results[0][0], {"metrics": avg_metrics}))
-        ranked.sort(key=lambda x: x[1].get("metrics", {}).get("sharpe_ratio", 0), reverse=True)
-        return ranked
+        for s, window_results, ftmo_pass_count in all_results:
+            if not window_results:
+                continue
+            # Average metrics across windows
+            all_sharpes = [r.get("metrics", {}).get("sharpe_ratio", 0) for _, r in window_results]
+            all_pf = [r.get("metrics", {}).get("profit_factor", 0) for _, r in window_results]
+            all_dd = [r.get("metrics", {}).get("max_drawdown_pct", 0) for _, r in window_results]
+            all_profit = [r.get("metrics", {}).get("net_profit", 0) for _, r in window_results]
 
-    def _validate(self, bt_result: dict) -> bool:
-        m = bt_result.get("metrics", {})
-        v = config.get("validation", default={})
-        if m.get("sharpe_ratio", 0) < v.get("min_sharpe", 0.8):
-            return False
-        if m.get("max_drawdown_pct", 100) > v.get("max_drawdown_pct", 25):
-            return False
-        if m.get("profit_factor", 0) < v.get("min_profit_factor", 1.3):
-            return False
-        if m.get("total_trades", 0) < v.get("min_trades", 20):
-            return False
-        return True
+            avg_sharpe = sum(all_sharpes) / max(len(all_sharpes), 1)
+            avg_pf = sum(all_pf) / max(len(all_pf), 1)
+            avg_dd = sum(all_dd) / max(len(all_dd), 1)
+            avg_profit = sum(all_profit) / max(len(all_profit), 1)
+
+            # FTMO score: weighted by weeks passed
+            weeks_passed_ratio = ftmo_pass_count / max(len(window_results), 1)
+            ftmo_score = weeks_passed_ratio * 60 + min(avg_sharpe * 10, 20) + min(avg_pf * 5, 20)
+
+            details = {
+                "weeks_passed": ftmo_pass_count,
+                "weeks_total": len(window_results),
+                "avg_sharpe": round(avg_sharpe, 2),
+                "avg_pf": round(avg_pf, 2),
+                "avg_dd": round(avg_dd, 2),
+                "avg_profit": round(avg_profit, 2),
+            }
+            ranked.append((s, ftmo_score, details))
+
+        ranked.sort(key=lambda x: x[1], reverse=True)
+        return ranked
 
     async def _optimize_strategy(self, strategy: Strategy) -> dict | None:
         try:
             import optuna
             optuna.logging.set_verbosity(optuna.logging.WARNING)
         except ImportError:
-            return await self._grid_search(strategy)
+            return None
 
         n_trials = config.get("optimization", "n_trials", default=100)
         windows = self._get_2week_windows()[:5]
@@ -279,19 +314,22 @@ class AutoOptimizationLoop:
             params = strategy.params.model_dump()
             params.update({"stop_loss": sl, "take_profit": tp, "ema_fast": ef,
                            "ema_slow": es, "atr_multiplier": atr_m, "trailing_stop": ts})
-            all_sharpes = []
+            ftmo_scores = []
             for w in windows:
-                rates = mt5_connector.get_rates_range(SYMBOL, EXEC_TF, w["start"], w["end"])
+                rates = mt5_connector.get_rates_range(strategy.symbol, EXEC_TF, w["start"], w["end"])
                 if rates is None or len(rates) < 100:
                     continue
                 import numpy as np
                 closes = np.array([r[4] for r in rates])
                 highs = np.array([r[2] for r in rates])
                 lows = np.array([r[3] for r in rates])
-                result = mt5_connector._process_rates(closes, highs, lows, SYMBOL, EXEC_TF, params)
+                result = mt5_connector._process_rates(closes, highs, lows,
+                                                      strategy.symbol, EXEC_TF, params)
                 if result and "metrics" in result:
-                    all_sharpes.append(result["metrics"].get("sharpe_ratio", 0))
-            return sum(all_sharpes) / max(len(all_sharpes), 1)
+                    eq = result["metrics"].get("equity_curve", [])
+                    compliance = ftmo_checker.check(result["metrics"], eq)
+                    ftmo_scores.append(compliance["ftmo_score"])
+            return sum(ftmo_scores) / max(len(ftmo_scores), 1)
 
         study = optuna.create_study(direction="maximize")
         study.optimize(objective, n_trials=n_trials, show_progress_bar=False)
@@ -299,50 +337,15 @@ class AutoOptimizationLoop:
         best_params = strategy.params.model_dump()
         best_params.update(best.params)
         result = mt5_connector.run_backtest(
-            strategy.name, SYMBOL, EXEC_TF,
+            strategy.name, strategy.symbol, EXEC_TF,
             windows[0]["start"], windows[0]["end"],
-            config.get("mt5", "initial_deposit", default=10000), best_params)
-        result["optimized_params"] = best_params
-        return result
-
-    async def _grid_search(self, strategy: Strategy) -> dict:
-        best_score = -999.0
-        best_params = strategy.params.model_dump()
-        windows = self._get_2week_windows()[:3]
-        for _ in range(30):
-            tp = dict(best_params)
-            tp["stop_loss"] = random.choice([15, 20, 30, 50, 80])
-            tp["take_profit"] = random.choice([30, 50, 80, 120, 200])
-            tp["ema_fast"] = random.choice([5, 8, 12, 15])
-            tp["ema_slow"] = random.choice([21, 34, 50, 55])
-            tp["atr_multiplier"] = random.choice([1.0, 1.5, 2.0])
-            tp["trailing_stop"] = random.choice([15, 20, 30, 50])
-            all_sharpes = []
-            for w in windows:
-                rates = mt5_connector.get_rates_range(SYMBOL, EXEC_TF, w["start"], w["end"])
-                if rates is None or len(rates) < 100:
-                    continue
-                import numpy as np
-                closes = np.array([r[4] for r in rates])
-                highs = np.array([r[2] for r in rates])
-                lows = np.array([r[3] for r in rates])
-                result = mt5_connector._process_rates(closes, highs, lows, SYMBOL, EXEC_TF, tp)
-                if result and "metrics" in result:
-                    all_sharpes.append(result["metrics"].get("sharpe_ratio", 0))
-            score = sum(all_sharpes) / max(len(all_sharpes), 1)
-            if score > best_score:
-                best_score = score
-                best_params = dict(tp)
-        result = mt5_connector.run_backtest(
-            strategy.name, SYMBOL, EXEC_TF,
-            windows[0]["start"], windows[0]["end"],
-            config.get("mt5", "initial_deposit", default=10000), best_params)
+            config.get("mt5", "initial_deposit", default=100000), best_params)
         result["optimized_params"] = best_params
         return result
 
     async def _mutate_strategy(self, strategy: Strategy) -> Strategy | None:
         params = strategy.params.model_dump()
-        mutation = random.choice(["param_tweak", "combine", "timeframe_shift"])
+        mutation = random.choice(["param_tweak", "combine"])
         if mutation == "param_tweak":
             key = random.choice(["ema_fast", "ema_slow", "stop_loss", "take_profit", "atr_multiplier", "trailing_stop"])
             if key in params:
@@ -351,41 +354,19 @@ class AutoOptimizationLoop:
                     params[key] = round(val * random.uniform(0.7, 1.3), 1)
                 else:
                     params[key] = val + random.randint(-5, 5)
-        elif mutation == "combine":
+        else:
             params["ema_fast"] = random.choice([5, 8, 10, 13, 21])
             params["ema_slow"] = random.choice([34, 50, 55, 89])
             params["atr_multiplier"] = round(random.uniform(1.0, 2.5), 1)
-            params["trailing_stop"] = random.choice([15, 20, 30, 50])
-        else:
-            params["ema_fast"] = random.randint(5, 20)
-            params["ema_slow"] = random.randint(21, 55)
 
         new_s = Strategy(
             name=f"{strategy.name}_m{uuid.uuid4().hex[:4]}",
             pattern=strategy.pattern, timeframe=Timeframe(EXEC_TF),
-            symbol=SYMBOL, params=StrategyParams(**params),
+            symbol=strategy.symbol, params=StrategyParams(**params),
             parent_id=strategy.id, generation=strategy.generation + 1,
             depth=strategy.depth + 1)
         await self._save_strategy_to_db(new_s)
-
-        windows = self._get_2week_windows()[:3]
-        all_sharpes = []
-        for w in windows:
-            rates = mt5_connector.get_rates_range(SYMBOL, EXEC_TF, w["start"], w["end"])
-            if rates is None or len(rates) < 100:
-                continue
-            import numpy as np
-            closes = np.array([r[4] for r in rates])
-            highs = np.array([r[2] for r in rates])
-            lows = np.array([r[3] for r in rates])
-            result = mt5_connector._process_rates(closes, highs, lows, SYMBOL, EXEC_TF, params)
-            if result and "metrics" in result:
-                all_sharpes.append(result["metrics"].get("sharpe_ratio", 0))
-        avg_sharpe = sum(all_sharpes) / max(len(all_sharpes), 1)
-        if avg_sharpe > strategy.fitness:
-            new_s.fitness = avg_sharpe
-            return new_s
-        return None
+        return new_s
 
     async def _save_strategy_to_db(self, strategy: Strategy) -> None:
         try:
@@ -404,7 +385,8 @@ class AutoOptimizationLoop:
         except Exception as e:
             log.error("Failed to save strategy: %s", e)
 
-    async def _save_backtest_result(self, strategy: Strategy, bt_result: dict, status: str) -> None:
+    async def _save_backtest_result(self, strategy: Strategy, bt_result: dict,
+                                     status: str, ftmo_score: float = 0.0) -> None:
         try:
             conn = await get_connection()
             now = datetime.now(timezone.utc).isoformat()
@@ -420,7 +402,8 @@ class AutoOptimizationLoop:
                 (result_id, strategy.id, strategy.name,
                  json.dumps(metrics, default=str),
                  json.dumps(bt_result.get("optimized_params", {})),
-                 json.dumps({}), json.dumps({}), json.dumps({}),
+                 json.dumps({"ftmo_score": ftmo_score}),
+                 json.dumps({}), json.dumps({}),
                  "", "", "", "", status, "[]", now))
             await conn.commit()
         except Exception as e:

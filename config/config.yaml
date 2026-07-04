@@ -1,8 +1,8 @@
-# QuantLab Configuration — XAUUSD Momentum Focus
+# QuantLab Configuration — FTMO Challenge Focus
 
 system:
   name: "QuantLab"
-  version: "3.0.0"
+  version: "4.0.0"
   mode: "autonomous"
   max_concurrent_backtests: 3
   tick_interval_seconds: 3
@@ -10,46 +10,77 @@ system:
 
 mt5:
   terminal_path: "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
-  symbol: "XAUUSD"
-  initial_deposit: 10000
+  initial_deposit: 100000
   leverage: 100
-  spread: 30
-  slippage: 5
 
-# Momentum strategies only — MACD, RSI, EMA crossovers
+# FTMO Challenge Rules
+ftmo:
+  account_size: 100000
+  profit_target: 10000
+  max_daily_loss: 3000
+  max_loss: 10000
+  best_day_rule_pct: 50
+  reward_pct: 90
+  # Risk per trade as % of account
+  risk_per_trade_pct: 1.0
+  # Max risk per trade in USD
+  max_risk_per_trade: 1000
+
+# 5 symbols, 3 strategy types each
+symbols:
+  - "XAUUSD"
+  - "BTCUSD"
+  - "ETHUSD"
+  - "NAS100"
+  - "US500"
+
 strategy_generation:
-  min_strategies_per_cycle: 8
-  max_strategies_per_cycle: 20
-  symbols:
-    - "XAUUSD"
+  min_strategies_per_cycle: 10
+  max_strategies_per_cycle: 30
   execution_timeframe: "M1"
   analysis_timeframes:
     - "H1"
     - "M15"
     - "M5"
+  # 3 direction types
+  directions:
+    - "bullish"
+    - "bearish"
+    - "directional"
+  # Momentum patterns for each direction
   patterns:
-    - macd_crossover
-    - macd_divergence
-    - rsi_momentum
-    - rsi_reversal
-    - ema_crossover
-    - ema_triple
-    - momentum_breakout
-    - macd_rsi_confluence
-    - ema_macd_combined
-    - multi_tf_momentum
+    bullish:
+      - ema_bullish_cross
+      - rsi_oversold_bounce
+      - macd_bullish_cross
+      - break_of_structure_bull
+      - fair_value_gap_bull
+    bearish:
+      - ema_bearish_cross
+      - rsi_overbought_reject
+      - macd_bearish_cross
+      - break_of_structure_bear
+      - fair_value_gap_bear
+    directional:
+      - ema_crossover
+      - macd_crossover
+      - rsi_momentum
+      - momentum_breakout
+      - multi_tf_momentum
 
-# 2-week rolling windows, most recent first
+# 2-week rolling windows
 backtest:
   window_days: 14
   window_step_days: 14
   max_history_days: 365
   start_from_most_recent: true
+  # Multi-week validation: if passes 1 window, test on more
+  validation_weeks: 4
 
 optimization:
   engine: "optuna"
   n_trials: 150
-  target_metric: "sharpe_ratio"
+  target_metric: "ftmo_score"
   params_to_optimize:
     stop_loss: {min: 10, max: 200, step: 5}
     take_profit: {min: 20, max: 500, step: 10}
@@ -67,19 +98,23 @@ optimization:
     lot_size: {min: 0.01, max: 0.5, step: 0.01}
 
 validation:
+  # FTMO-specific validation
   min_sharpe: 0.8
-  max_drawdown_pct: 25
+  max_drawdown_pct: 20
   min_profit_factor: 1.3
-  min_trades: 20
+  min_trades: 15
+  # Must pass FTMO rules
+  ftmo_compliant: true
+  # Multi-week: must pass at least N of validation weeks
+  min_weeks_passed: 3
 
 ranking:
   weights:
-    sharpe_ratio: 0.30
-    sortino_ratio: 0.15
+    ftmo_score: 0.35
+    sharpe_ratio: 0.20
     profit_factor: 0.20
     max_drawdown: 0.15
     win_rate: 0.10
-    recovery_factor: 0.10
 
 dashboard:
   host: "0.0.0.0"
