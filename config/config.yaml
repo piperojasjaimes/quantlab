@@ -1,0 +1,156 @@
+# QuantLab Configuration
+# Autonomous Quantitative Research Laboratory for MT5
+
+system:
+  name: "QuantLab"
+  version: "1.0.0"
+  mode: "autonomous"  # autonomous | manual | hybrid
+  max_concurrent_backtests: 3
+  max_concurrent_optimizations: 2
+  tick_interval_seconds: 5
+  health_check_interval_seconds: 30
+  max_retries_per_task: 3
+  task_timeout_seconds: 3600
+
+mt5:
+  terminal_path: "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
+  symbol: "EURUSD"
+  timeframe: "M15"
+  start_date: "2023-01-01"
+  end_date: "2025-12-31"
+  initial_deposit: 10000
+  leverage: 100
+  spread: 1.5
+  slippage: 2
+  execution_mode: "delayed"  # real | delayed | random_delay
+  optimize_mode: "slow_complete"  # slow_complete | fast_genetic
+
+strategy_generation:
+  min_strategies_per_cycle: 5
+  max_strategies_per_cycle: 20
+  indicators:
+    - EMA
+    - SMA
+    - RSI
+    - MACD
+    - ADX
+    - ATR
+    - Bollinger
+    - VWAP
+    - Stochastic
+    - CCI
+  timeframes:
+    - M5
+    - M15
+    - M30
+    - H1
+    - H4
+    - D1
+  patterns:
+    - trend_following
+    - mean_reversion
+    - breakout
+    - scalping
+    - swing
+    - grid
+    - martingale_adaptive
+    - session_based
+    - killzone_trading
+    - smc_structure
+  risk_profiles:
+    conservative: {max_dd: 10, min_sharpe: 1.5, min_pf: 1.5}
+    moderate: {max_dd: 20, min_sharpe: 1.0, min_pf: 1.3}
+    aggressive: {max_dd: 35, min_sharpe: 0.7, min_pf: 1.1}
+
+optimization:
+  engine: "optuna"  # optuna | grid | bayesian
+  n_trials: 200
+  n_startup_trials: 20
+  timeout_seconds: 1800
+  target_metric: "sharpe_ratio"  # sharpe_ratio | sortino | calmar | profit_factor
+  params_to_optimize:
+    stop_loss: {min: 10, max: 200, step: 5}
+    take_profit: {min: 20, max: 500, step: 10}
+    ema_fast: {min: 5, max: 50, step: 1}
+    ema_slow: {min: 20, max: 200, step: 5}
+    rsi_period: {min: 7, max: 50, step: 1}
+    rsi_overbought: {min: 60, max: 90, step: 5}
+    rsi_oversold: {min: 10, max: 40, step: 5}
+    atr_period: {min: 7, max: 30, step: 1}
+    atr_multiplier: {min: 0.5, max: 3.0, step: 0.1}
+    trailing_stop: {min: 5, max: 100, step: 5}
+    lot_size: {min: 0.01, max: 1.0, step: 0.01}
+
+validation:
+  walk_forward:
+    n_splits: 5
+    train_ratio: 0.7
+    min_trades_per_split: 30
+  monte_carlo:
+    n_simulations: 1000
+    confidence_level: 0.95
+    max_drawdown_threshold: 0.30
+  out_of_sample:
+    period_months: 3
+    min_trades: 20
+  stress_tests:
+    spread_multiplier: 3.0
+    slippage_pips: 5
+    delay_ms: 500
+    noise_std: 0.001
+
+mutation:
+  max_depth: 5
+  mutation_rate: 0.3
+  crossover_rate: 0.4
+  elite_preserve_pct: 0.1
+  min_fitness_delta: 0.01
+
+ranking:
+  metrics:
+    - sharpe_ratio
+    - sortino_ratio
+    - calmar_ratio
+    - profit_factor
+    - max_drawdown
+    - recovery_factor
+    - expectancy
+    - win_rate
+    - ulcer_index
+    - mar_ratio
+  weights:
+    sharpe_ratio: 0.25
+    sortino_ratio: 0.15
+    calmar_ratio: 0.10
+    profit_factor: 0.15
+    max_drawdown: 0.10
+    win_rate: 0.10
+    recovery_factor: 0.05
+    expectancy: 0.05
+    ulcer_index: 0.03
+    mar_ratio: 0.02
+
+memory:
+  db_path: "data/quantlab.db"
+  backup_interval_hours: 24
+  max_history_days: 365
+
+dashboard:
+  host: "0.0.0.0"
+  port: 8501
+  auto_refresh_seconds: 10
+  theme: "dark"
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s | %(levelname)-8s | %(name)-20s | %(message)s"
+  max_file_size_mb: 50
+  backup_count: 10
+  console: true
+  file: true
+
+git:
+  auto_commit: true
+  commit_message_prefix: "[QuantLab]"
+  auto_tag: true
+  tag_prefix: "v"
