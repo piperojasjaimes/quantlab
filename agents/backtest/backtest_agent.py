@@ -10,6 +10,7 @@ from agents.base_agent import BaseAgent
 from core.models import BacktestMetrics, BacktestResult, Task
 from core.config import config
 from core.logger import get_logger
+from core.mt5.connector import mt5_connector
 
 log = get_logger("agent.backtest")
 
