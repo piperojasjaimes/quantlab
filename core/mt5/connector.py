@@ -127,16 +127,8 @@ class MT5Connector:
             return self._simulate_backtest(symbol, timeframe, params or {})
 
         try:
-            tf = self._tf_to_mt5(timeframe)
-            from datetime import datetime as dt
-
-            strategy = self._mt5.strategytester_create()
-            if strategy is None:
-                log.warning("Cannot create strategy tester, using simulation")
-                return self._simulate_backtest(symbol, timeframe, params or {})
-
             rates = self.get_rates_range(symbol, timeframe, start_date, end_date)
-            if rates is None:
+            if rates is None or len(rates) < 100:
                 return self._simulate_backtest(symbol, timeframe, params or {})
 
             closes = np.array([r[4] for r in rates])
