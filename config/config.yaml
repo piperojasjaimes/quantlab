@@ -32,7 +32,7 @@ symbols:
   - "BTCUSD"
   - "ETHUSD"
   - "NAS100"
-  - "US500"
+  - "SP500"
 
 strategy_generation:
   min_strategies_per_cycle: 10

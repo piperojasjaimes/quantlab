@@ -28,7 +28,7 @@ from database.task_repository import save_task, update_task_status, add_task_log
 
 log = get_logger("pipeline.loop")
 
-SYMBOLS = config.get("symbols", default=["XAUUSD", "BTCUSD", "ETHUSD", "NAS100", "US500"])
+SYMBOLS = config.get("symbols", default=["XAUUSD", "BTCUSD", "ETHUSD", "NAS100", "SP500"])
 DIRECTIONS = config.get("strategy_generation", "directions", default=["bullish", "bearish", "directional"])
 ANALYSIS_TF = config.get("strategy_generation", "analysis_timeframes", default=["H1", "M15", "M5"])
 EXEC_TF = config.get("strategy_generation", "execution_timeframe", default="M1")
