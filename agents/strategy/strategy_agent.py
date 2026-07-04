@@ -28,12 +28,20 @@ TIMEFRAMES = [Timeframe(t) for t in config.get("strategy_generation", "timeframe
     "M5", "M15", "M30", "H1", "H4", "D1",
 ])]
 
-PATTERNS = [StrategyPattern(p) for p in config.get("strategy_generation", "patterns", default=[
-    "trend_following", "mean_reversion", "breakout", "scalping", "swing",
-    "grid", "session_based", "killzone_trading", "smc_structure",
-])]
+_valid_patterns = [p.value for p in StrategyPattern]
+_config_patterns = config.get("strategy_generation", "patterns", default=[])
+if isinstance(_config_patterns, dict):
+    _flat = []
+    for v in _config_patterns.values():
+        if isinstance(v, list):
+            _flat.extend(v)
+    _config_patterns = _flat
+PATTERNS = [StrategyPattern(p) for p in _config_patterns if p in _valid_patterns]
+if not PATTERNS:
+    PATTERNS = [StrategyPattern.TREND_FOLLOWING, StrategyPattern.MEAN_REVERSION,
+                StrategyPattern.BREAKOUT, StrategyPattern.SCALPING]
 
-SYMBOLS = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD", "USDCAD", "XAUUSD"]
+SYMBOLS = config.get("symbols", default=["XAUUSD", "BTCUSD", "ETHUSD", "NAS100", "SP500"])
 
 
 class StrategyAgent(BaseAgent):

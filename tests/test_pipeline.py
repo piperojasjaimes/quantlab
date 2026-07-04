@@ -59,34 +59,31 @@ class TestMT5Connector:
 class TestAutoLoop:
     def test_generate_strategy(self):
         loop = AutoOptimizationLoop()
-        s = loop._generate_strategy()
+        s = loop._generate_strategy("XAUUSD", "bullish")
         assert isinstance(s, Strategy)
         assert s.name != ""
-        assert s.pattern in StrategyPattern
+        assert s.symbol == "XAUUSD"
         assert s.timeframe in Timeframe
 
     def test_random_params(self):
         loop = AutoOptimizationLoop()
-        for pattern in ["trend_following", "scalping", "mean_reversion", "grid", "breakout"]:
-            p = loop._random_params(pattern)
-            assert p.ema_fast < p.ema_slow
-            assert p.stop_loss > 0
-            assert p.take_profit > 0
+        for direction in ["bullish", "bearish", "directional"]:
+            for pattern in ["ema_crossover", "macd_crossover", "rsi_momentum"]:
+                p = loop._random_params(pattern, direction, "XAUUSD")
+                assert p.stop_loss > 0
+                assert p.take_profit > 0
 
     def test_validate_good(self):
-        loop = AutoOptimizationLoop()
-        bt = {"metrics": {"sharpe_ratio": 1.5, "max_drawdown_pct": 15, "profit_factor": 1.8}}
-        assert loop._validate(bt) is True
+        from core.ftmo.compliance import ftmo_checker
+        bt = {"metrics": {"sharpe_ratio": 1.5, "max_drawdown_pct": 8, "profit_factor": 1.8, "net_profit": 15000, "max_drawdown": 800, "win_rate": 55, "total_trades": 50}}
+        result = ftmo_checker.check(bt["metrics"])
+        assert result["ftmo_score"] > 50
 
-    def test_validate_bad_sharpe(self):
-        loop = AutoOptimizationLoop()
-        bt = {"metrics": {"sharpe_ratio": 0.3, "max_drawdown_pct": 10, "profit_factor": 1.5}}
-        assert loop._validate(bt) is False
-
-    def test_validate_bad_dd(self):
-        loop = AutoOptimizationLoop()
-        bt = {"metrics": {"sharpe_ratio": 2.0, "max_drawdown_pct": 40, "profit_factor": 2.0}}
-        assert loop._validate(bt) is False
+    def test_validate_bad(self):
+        from core.ftmo.compliance import ftmo_checker
+        bt = {"metrics": {"sharpe_ratio": 0.3, "max_drawdown_pct": 40, "profit_factor": 0.9, "net_profit": 2000, "max_drawdown": 40000, "win_rate": 35, "total_trades": 10}}
+        result = ftmo_checker.check(bt["metrics"])
+        assert result["passed"] is False
 
     def test_stop(self):
         loop = AutoOptimizationLoop()
