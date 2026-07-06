@@ -1,0 +1,50 @@
+﻿; Quant_XAUUSD_Alpha_Final v2.0 — Strategy Tester Settings
+; Optimizado para $1,000 — 10% riesgo con filtro neutral
+; Symbol: XAUUSD | Period: M1 | Model: Every tick
+
+InpBalance=1000.0
+InpRiskPct=10.0
+InpMaxRiskPct=20.0
+InpTargetRatio=2.0
+InpMaxPositions=3
+InpMaxDailyTrades=50
+InpMaxDuration=240
+InpConsecLimit=10
+InpMagic=777777
+
+InpSLmult=0.5
+InpSLmultMin=0.3
+InpSLmultMax=1.5
+InpTrailMult=0.3
+InpPartialPct=0.5
+
+InpEMAfast=8
+InpEMAslow=26
+InpATRperiod=20
+InpRegimePeriod=20
+
+InpMinEfficiency=0.05
+InpMinVolume=5
+InpMaxSpread=50
+
+; Filtro Neutral
+InpEnableNeutralFilter=true
+InpNeutralThreshold=0.12
+InpNeutralBars=8
+InpADXthreshold=20.0
+InpADXperiod=14
+
+; Sesiones
+InpLondonStart=3
+InpLondonEnd=12
+InpNYStart=13
+InpNYEnd=21
+
+; Compounding
+InpEnableCompound=true
+InpCompoundStep=100.0
+
+; Comisiones/Swaps
+InpCommission=3.5
+InpSwapLong=-2.5
+InpSwapShort=-0.5
